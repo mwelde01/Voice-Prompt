@@ -88,16 +88,21 @@ function wordSimilarity(recognized, scriptWord) {
   if (!a || !b) return 0;
   if (a === b) return 1.0;
 
-  // Prefix / suffix match (handles plurals, contractions, partial recognition)
-  if (a.startsWith(b) || b.startsWith(a)) return 0.88;
-  if (a.length > 4 && b.length > 4 && (a.includes(b) || b.includes(a))) return 0.75;
+  // Prefix match — guard against short-word false positives.
+  // "in" must NOT score 0.88 against "information", "into", etc.
+  // Both words must be >= 4 chars so tiny function words don't hijack.
+  if (a.length >= 4 && b.length >= 4) {
+    if (a.startsWith(b) || b.startsWith(a)) return 0.88;
+    if (a.length > 5 && b.length > 5 && (a.includes(b) || b.includes(a))) return 0.75;
+  }
 
-  // Edit-distance similarity for reasonable length words
+  // Edit-distance — raised minimum similarity from 0.6 → 0.72 to
+  // reduce false positives from Windows SR mishears.
   if (Math.abs(a.length - b.length) <= 3) {
     const dist = levenshtein(a, b);
     const maxLen = Math.max(a.length, b.length);
     const sim = 1 - dist / maxLen;
-    if (sim >= 0.6) return sim;
+    if (sim >= 0.72) return sim;
   }
 
   return 0;
@@ -115,8 +120,10 @@ function processTranscript(transcript) {
   let lastMatch  = state.currentWordIndex - 1;
 
   for (const rWord of recognized) {
-    const windowEnd = Math.min(searchFrom + 25, state.scriptWords.length);
-    let bestScore = 0.42;   // minimum threshold
+    // Window reduced from 25 → 15: prevents a single phrase from
+    // jumping the script 20+ words ahead on a single mishear.
+    const windowEnd = Math.min(searchFrom + 15, state.scriptWords.length);
+    let bestScore = 0.55;   // raised from 0.42 — requires a meaningful match
     let bestIdx   = -1;
 
     for (let i = searchFrom; i < windowEnd; i++) {
