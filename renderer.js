@@ -261,32 +261,38 @@ function buildNativeRecognition() {
       if (this._running) return;
       this._running = true;
 
-      // Remove any stale listeners from a previous session
+      // Always clear stale listeners before re-attaching
       window.electronAPI.removeSpeechListeners();
+
+      // Fire onstart only after PowerShell confirms the engine is ready,
+      // not on IPC round-trip (which would be before the engine loads)
+      window.electronAPI.onSpeechReady(() => {
+        if (this._running && this.onstart) this.onstart();
+      });
 
       window.electronAPI.onSpeechResult((text) => {
         if (!this._running || !this.onresult) return;
-        // Deliver as a SpeechRecognitionEvent-compatible object
+        // Wrap in a SpeechRecognitionEvent-compatible object
         this.onresult({
           resultIndex: 0,
           results: [{ isFinal: true, 0: { transcript: text } }],
         });
       });
 
-      window.electronAPI.onSpeechError(() => {
+      // Pass the real PowerShell error message through so the UI can show it
+      window.electronAPI.onSpeechError((msg) => {
         if (!this._running) return;
+        this._running = false;
+        if (this.onerror) this.onerror({ error: 'audio-capture', message: msg });
+        if (this.onend)   this.onend();
+      });
+
+      // Only use .catch() — onstart is driven by speech:ready, not by this promise
+      window.electronAPI.startSpeech().catch(() => {
         this._running = false;
         if (this.onerror) this.onerror({ error: 'audio-capture' });
         if (this.onend)   this.onend();
       });
-
-      window.electronAPI.startSpeech()
-        .then(() => { if (this._running && this.onstart) this.onstart(); })
-        .catch(() => {
-          this._running = false;
-          if (this.onerror) this.onerror({ error: 'audio-capture' });
-          if (this.onend)   this.onend();
-        });
     },
 
     stop() {
@@ -358,15 +364,18 @@ function buildRecognition() {
 
   r.onerror = (e) => {
     state.recognitionRunning = false;
-    const messages = {
-      'audio-capture':       'No microphone found — check your mic',
+    // Show the real PowerShell error if available, otherwise fall back to
+    // human-readable labels for the standard Web Speech API error codes
+    const knownLabels = {
       'not-allowed':         'Microphone access denied — check permissions',
       'network':             'Network error — speech needs internet access',
       'service-not-allowed': 'Speech service unavailable',
     };
-    if (messages[e.error]) {
-      setStatus('idle', messages[e.error]);
-    }
+    const display = e.message          // real text from PowerShell stderr
+      || knownLabels[e.error]          // labelled Web Speech API error
+      || (e.error === 'audio-capture' ? 'No microphone found — check your mic' : null);
+    if (display) setStatus('idle', display);
+
     if (state.isPlaying && state.mode === 'voice') {
       setTimeout(() => startRecognition(), 800);
     }
