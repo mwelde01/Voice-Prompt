@@ -246,93 +246,20 @@ function updateProgress() {
 
 
 /* ================================================================
-   Voice recognition
+   Voice recognition — Web Speech API
+   Works in Chrome/Edge when the page is served over HTTPS.
+   GitHub Pages provides HTTPS automatically.
    ================================================================ */
 
-/**
- * Build a SpeechRecognition-compatible wrapper that uses Windows'
- * built-in System.Speech engine via Electron IPC (no internet needed).
- * Returns null on non-Windows or when electronAPI is unavailable.
- */
-function buildNativeRecognition() {
-  if (!window.electronAPI || window.electronAPI.platform !== 'win32') return null;
-
-  return {
-    onstart:  null,
-    onresult: null,
-    onerror:  null,
-    onend:    null,
-    _running: false,
-
-    start() {
-      if (this._running) return;
-      this._running = true;
-
-      // Always clear stale listeners before re-attaching
-      window.electronAPI.removeSpeechListeners();
-
-      // Fire onstart only after PowerShell confirms the engine is ready,
-      // not on IPC round-trip (which would be before the engine loads)
-      window.electronAPI.onSpeechReady(() => {
-        if (this._running && this.onstart) this.onstart();
-      });
-
-      window.electronAPI.onSpeechResult((text) => {
-        if (!this._running || !this.onresult) return;
-        // Wrap in a SpeechRecognitionEvent-compatible object
-        this.onresult({
-          resultIndex: 0,
-          results: [{ isFinal: true, 0: { transcript: text } }],
-        });
-      });
-
-      // Pass the real PowerShell error message through so the UI can show it
-      window.electronAPI.onSpeechError((msg) => {
-        if (!this._running) return;
-        this._running = false;
-        if (this.onerror) this.onerror({ error: 'audio-capture', message: msg });
-        if (this.onend)   this.onend();
-      });
-
-      // Only use .catch() — onstart is driven by speech:ready, not by this promise
-      window.electronAPI.startSpeech().catch(() => {
-        this._running = false;
-        if (this.onerror) this.onerror({ error: 'audio-capture' });
-        if (this.onend)   this.onend();
-      });
-    },
-
-    stop() {
-      if (!this._running) return;
-      this._running = false;
-      window.electronAPI.removeSpeechListeners();
-      window.electronAPI.stopSpeech();
-      if (this.onend) this.onend();
-    },
-  };
-}
-
-/**
- * Returns a recognition object (native or Web Speech API) with all
- * event handlers attached, or null if nothing is available.
- */
 function buildRecognition() {
-  // Prefer Windows native speech (offline, no Google API key needed)
-  let r = buildNativeRecognition();
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) return null;
 
-  if (!r) {
-    // Fall back to browser Web Speech API
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) return null;
-
-    r = new SpeechRecognition();
-    r.continuous      = true;
-    r.interimResults  = true;
-    r.maxAlternatives = 1;
-    r.lang            = state.language;
-  }
-
-  // ── Shared event handlers (work for both native and Web Speech) ──
+  const r = new SpeechRecognition();
+  r.continuous      = true;
+  r.interimResults  = true;
+  r.maxAlternatives = 1;
+  r.lang            = state.language;
 
   r.onstart = () => {
     state.recognitionRunning = true;
@@ -354,14 +281,13 @@ function buildRecognition() {
       }
     }
 
-    // Show what's being heard so the user can verify the mic is working
+    // Show what the mic is hearing in the status bar
     const heard = (finalText || interimText).trim();
     if (heard) {
       const preview = heard.length > 38 ? '\u2026' + heard.slice(-35) : heard;
       setStatus('listening', `Hearing: \u201c${preview}\u201d`);
     }
 
-    // Use whichever is available — final has higher confidence
     const transcript = finalText || interimText;
     if (transcript.trim() && transcript !== state.lastInterimTranscript) {
       state.lastInterimTranscript = interimText;
@@ -371,18 +297,13 @@ function buildRecognition() {
 
   r.onerror = (e) => {
     state.recognitionRunning = false;
-    // Show the real PowerShell error if available, otherwise fall back to
-    // human-readable labels for the standard Web Speech API error codes
-    const knownLabels = {
-      'not-allowed':         'Microphone access denied — check permissions',
-      'network':             'Network error — speech needs internet access',
+    const messages = {
+      'not-allowed':         'Microphone access denied — allow mic in browser',
+      'network':             'Network error — check your connection',
+      'audio-capture':       'No microphone found — check your mic',
       'service-not-allowed': 'Speech service unavailable',
     };
-    const display = e.message          // real text from PowerShell stderr
-      || knownLabels[e.error]          // labelled Web Speech API error
-      || (e.error === 'audio-capture' ? 'No microphone found — check your mic' : null);
-    if (display) setStatus('idle', display);
-
+    if (messages[e.error]) setStatus('idle', messages[e.error]);
     if (state.isPlaying && state.mode === 'voice') {
       setTimeout(() => startRecognition(), 800);
     }
@@ -390,6 +311,7 @@ function buildRecognition() {
 
   r.onend = () => {
     state.recognitionRunning = false;
+    // Chrome times out every ~60 s — restart seamlessly
     if (state.isPlaying && state.mode === 'voice') {
       setTimeout(() => startRecognition(), 300);
     }
@@ -534,9 +456,9 @@ function showTeleprompter() {
     const r = buildRecognition();
     if (!r) {
       alert(
-        'Speech recognition is not supported in this window.\n\n' +
-        'Try switching to Auto-Scroll mode, or make sure the app\n' +
-        'has microphone permission.'
+        'Speech recognition is not supported in this browser.\n\n' +
+        'Please use Google Chrome or Microsoft Edge, and make sure\n' +
+        'microphone permission is allowed for this site.'
       );
       showEditor();
       return;
