@@ -242,17 +242,84 @@ function updateProgress() {
    Voice recognition
    ================================================================ */
 
+/**
+ * Build a SpeechRecognition-compatible wrapper that uses Windows'
+ * built-in System.Speech engine via Electron IPC (no internet needed).
+ * Returns null on non-Windows or when electronAPI is unavailable.
+ */
+function buildNativeRecognition() {
+  if (!window.electronAPI || window.electronAPI.platform !== 'win32') return null;
+
+  return {
+    onstart:  null,
+    onresult: null,
+    onerror:  null,
+    onend:    null,
+    _running: false,
+
+    start() {
+      if (this._running) return;
+      this._running = true;
+
+      // Remove any stale listeners from a previous session
+      window.electronAPI.removeSpeechListeners();
+
+      window.electronAPI.onSpeechResult((text) => {
+        if (!this._running || !this.onresult) return;
+        // Deliver as a SpeechRecognitionEvent-compatible object
+        this.onresult({
+          resultIndex: 0,
+          results: [{ isFinal: true, 0: { transcript: text } }],
+        });
+      });
+
+      window.electronAPI.onSpeechError(() => {
+        if (!this._running) return;
+        this._running = false;
+        if (this.onerror) this.onerror({ error: 'audio-capture' });
+        if (this.onend)   this.onend();
+      });
+
+      window.electronAPI.startSpeech()
+        .then(() => { if (this._running && this.onstart) this.onstart(); })
+        .catch(() => {
+          this._running = false;
+          if (this.onerror) this.onerror({ error: 'audio-capture' });
+          if (this.onend)   this.onend();
+        });
+    },
+
+    stop() {
+      if (!this._running) return;
+      this._running = false;
+      window.electronAPI.removeSpeechListeners();
+      window.electronAPI.stopSpeech();
+      if (this.onend) this.onend();
+    },
+  };
+}
+
+/**
+ * Returns a recognition object (native or Web Speech API) with all
+ * event handlers attached, or null if nothing is available.
+ */
 function buildRecognition() {
-  const SpeechRecognition =
-    window.SpeechRecognition || window.webkitSpeechRecognition;
+  // Prefer Windows native speech (offline, no Google API key needed)
+  let r = buildNativeRecognition();
 
-  if (!SpeechRecognition) return null;
+  if (!r) {
+    // Fall back to browser Web Speech API
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return null;
 
-  const r = new SpeechRecognition();
-  r.continuous       = true;
-  r.interimResults   = true;
-  r.maxAlternatives  = 1;
-  r.lang             = state.language;
+    r = new SpeechRecognition();
+    r.continuous      = true;
+    r.interimResults  = true;
+    r.maxAlternatives = 1;
+    r.lang            = state.language;
+  }
+
+  // ── Shared event handlers (work for both native and Web Speech) ──
 
   r.onstart = () => {
     state.recognitionRunning = true;
@@ -291,17 +358,15 @@ function buildRecognition() {
 
   r.onerror = (e) => {
     state.recognitionRunning = false;
-    // Show actionable messages for errors the user can actually fix
     const messages = {
-      'audio-capture':      'No microphone found — check your mic',
-      'not-allowed':        'Microphone access denied — check permissions',
-      'network':            'Network error — speech needs internet access',
-      'service-not-allowed':'Speech service unavailable',
+      'audio-capture':       'No microphone found — check your mic',
+      'not-allowed':         'Microphone access denied — check permissions',
+      'network':             'Network error — speech needs internet access',
+      'service-not-allowed': 'Speech service unavailable',
     };
     if (messages[e.error]) {
       setStatus('idle', messages[e.error]);
     }
-    // Restart for recoverable errors (no-speech timeout, aborted, etc.)
     if (state.isPlaying && state.mode === 'voice') {
       setTimeout(() => startRecognition(), 800);
     }
@@ -309,7 +374,6 @@ function buildRecognition() {
 
   r.onend = () => {
     state.recognitionRunning = false;
-    // Chrome's API times out every ~60 s — restart seamlessly
     if (state.isPlaying && state.mode === 'voice') {
       setTimeout(() => startRecognition(), 300);
     }
