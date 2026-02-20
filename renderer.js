@@ -211,10 +211,16 @@ function setCurrentWordIndex(rawIndex) {
     else                  el.className = 'word upcoming';
   });
 
-  // Scroll the current word to roughly 1/3 from the top of the viewport
+  // Scroll the current word to roughly 1/3 from the top of the viewport.
+  // Use teleContent.scrollTo() directly instead of scrollIntoView() to avoid
+  // Electron quirks where body { overflow: hidden } can intercept the scroll.
   const currentEl = state.wordElements[index];
-  if (currentEl) {
-    currentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (currentEl && teleContent) {
+    const containerRect = teleContent.getBoundingClientRect();
+    const elRect        = currentEl.getBoundingClientRect();
+    const relativeTop   = elRect.top - containerRect.top;
+    const target        = teleContent.scrollTop + relativeTop - teleContent.clientHeight / 3;
+    teleContent.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
   }
 
   updateProgress();
