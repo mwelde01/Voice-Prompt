@@ -33,34 +33,53 @@ function startLocalServer() {
 
 
 /* ================================================================
-   Windows native speech — PowerShell + System.Speech (offline)
+   Windows native speech — PowerShell + inline C# + System.Speech
 
-   We write the script to a temp .ps1 file and use -File so that:
-     • Newlines are preserved exactly (inline -Command breaks them)
-     • -ExecutionPolicy Bypass applies cleanly to the whole file
-   The script writes "READY" to stderr when the engine is listening,
-   so the renderer knows when to show "Listening…" status.
+   WHY INLINE C#:
+   PowerShell script-block delegates (add_SpeechRecognized({...}))
+   need the PowerShell main-thread runspace to be free to execute.
+   But our main thread is blocked by "while($true){Start-Sleep}",
+   so every recognised phrase just queues silently and nothing runs.
+
+   C# lambdas compile to real delegates that fire on the engine's
+   own audio thread and write to stdout with no PS runspace needed.
+
+   We write the script to a temp .ps1 file so that:
+     • Newlines survive Windows argument quoting (-Command breaks them)
+     • -ExecutionPolicy Bypass applies to the whole file cleanly
    ================================================================ */
 const PS_SCRIPT_PATH = path.join(os.tmpdir(), 'voiceprompt-speech.ps1');
 
-// Written as an array to avoid template-literal newline issues
+// The here-string closing "@ MUST start at column 0 in the file.
 const PS_SCRIPT_LINES = [
   '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
   'try {',
   '    Add-Type -AssemblyName System.Speech',
-  '    $engine = New-Object System.Speech.Recognition.SpeechRecognitionEngine',
-  '    $grammar = New-Object System.Speech.Recognition.DictationGrammar',
-  '    $engine.LoadGrammar($grammar)',
-  '    $engine.SetInputToDefaultAudioDevice()',
-  '    $engine.add_SpeechRecognized({',
-  '        param($sender, $e)',
-  '        [Console]::WriteLine($e.Result.Text)',
-  '        [Console]::Out.Flush()',
-  '    })',
-  '    $engine.RecognizeAsync([System.Speech.Recognition.RecognizeMode]::Multiple)',
+  // Grab the loaded assembly path so Add-Type can reference it
+  '    $dll = [System.Speech.Recognition.SpeechRecognitionEngine].Assembly.Location',
+  '    $src = @"',
+  'using System;',
+  'using System.Speech.Recognition;',
+  'public static class VoiceRec {',
+  '    static SpeechRecognitionEngine _e;',
+  '    public static void Start() {',
+  '        _e = new SpeechRecognitionEngine();',
+  '        _e.LoadGrammar(new DictationGrammar());',
+  '        _e.SetInputToDefaultAudioDevice();',
+  '        _e.SpeechRecognized += (s, ev) => {',
+  '            Console.WriteLine(ev.Result.Text);',
+  '            Console.Out.Flush();',
+  '        };',
+  '        _e.RecognizeAsync(RecognizeMode.Multiple);',
+  '    }',
+  '}',
+  '"@',                                         // must be at column 0
+  '    Add-Type -TypeDefinition $src -ReferencedAssemblies $dll',
+  '    [VoiceRec]::Start()',
   '    [Console]::Error.WriteLine("READY")',
   '    [Console]::Error.Flush()',
-  '    while ($true) { Start-Sleep -Seconds 1 }',
+  // Keep the process alive; C# callbacks run on the engine's own thread
+  '    while ($true) { [System.Threading.Thread]::Sleep(1000) }',
   '} catch {',
   '    [Console]::Error.WriteLine("ERROR: " + $_.Exception.Message)',
   '    [Console]::Error.Flush()',
