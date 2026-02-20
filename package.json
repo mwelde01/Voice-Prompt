@@ -1,0 +1,16 @@
+{
+  "name": "voice-prompt-desktop",
+  "version": "1.0.0",
+  "description": "A voice-controlled teleprompter for your desktop",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "start-dev": "NODE_ENV=development electron ."
+  },
+  "keywords": ["teleprompter", "voice", "speech", "electron"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.3.3"
+  }
+}
