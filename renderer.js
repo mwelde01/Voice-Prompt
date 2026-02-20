@@ -274,6 +274,13 @@ function buildRecognition() {
       }
     }
 
+    // Show what's being heard so the user can verify the mic is working
+    const heard = (finalText || interimText).trim();
+    if (heard) {
+      const preview = heard.length > 38 ? '\u2026' + heard.slice(-35) : heard;
+      setStatus('listening', `Hearing: \u201c${preview}\u201d`);
+    }
+
     // Use whichever is available — final has higher confidence
     const transcript = finalText || interimText;
     if (transcript.trim() && transcript !== state.lastInterimTranscript) {
@@ -284,7 +291,17 @@ function buildRecognition() {
 
   r.onerror = (e) => {
     state.recognitionRunning = false;
-    // 'no-speech' and 'audio-capture' are harmless; restart automatically
+    // Show actionable messages for errors the user can actually fix
+    const messages = {
+      'audio-capture':      'No microphone found — check your mic',
+      'not-allowed':        'Microphone access denied — check permissions',
+      'network':            'Network error — speech needs internet access',
+      'service-not-allowed':'Speech service unavailable',
+    };
+    if (messages[e.error]) {
+      setStatus('idle', messages[e.error]);
+    }
+    // Restart for recoverable errors (no-speech timeout, aborted, etc.)
     if (state.isPlaying && state.mode === 'voice') {
       setTimeout(() => startRecognition(), 800);
     }
