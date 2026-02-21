@@ -18,7 +18,6 @@ const state = {
   // Voice recognition
   recognition: null,
   recognitionRunning: false,
-  lastInterimTranscript: '',
 
   // Auto-scroll
   autoScrollTimer: null,
@@ -119,11 +118,18 @@ function processTranscript(transcript) {
   let searchFrom = state.currentWordIndex;
   let lastMatch  = state.currentWordIndex - 1;
 
+  // Hard cap: one transcript event (one spoken phrase) can never advance
+  // more than 15 positions. Without this, a 20-word final transcript with a
+  // per-word window of 8 could theoretically jump 160 positions in one call.
+  const absoluteMax = Math.min(state.currentWordIndex + 15, state.scriptWords.length);
+
   for (const rWord of recognized) {
-    // Window reduced from 25 → 15: prevents a single phrase from
-    // jumping the script 20+ words ahead on a single mishear.
-    const windowEnd = Math.min(searchFrom + 15, state.scriptWords.length);
-    let bestScore = 0.55;   // raised from 0.42 — requires a meaningful match
+    // Per-word window of 8: tight enough to prevent skipping over mishears,
+    // wide enough to handle a few unrecognised filler words.
+    const windowEnd = Math.min(searchFrom + 8, absoluteMax);
+    if (windowEnd <= searchFrom) break;   // hit the hard cap
+
+    let bestScore = 0.55;
     let bestIdx   = -1;
 
     for (let i = searchFrom; i < windowEnd; i++) {
@@ -288,10 +294,13 @@ function buildRecognition() {
       setStatus('listening', `Hearing: \u201c${preview}\u201d`);
     }
 
-    const transcript = finalText || interimText;
-    if (transcript.trim() && transcript !== state.lastInterimTranscript) {
-      state.lastInterimTranscript = interimText;
-      processTranscript(transcript);
+    // Only advance position on FINAL results.
+    // Interim results are a continuously growing phrase ("hello" → "hello world"
+    // → "hello world how are you"). Using them for matching causes the same words
+    // to be processed multiple times, then re-processed again when the final
+    // arrives — producing large forward jumps.
+    if (finalText.trim()) {
+      processTranscript(finalText.trim());
     }
   };
 
