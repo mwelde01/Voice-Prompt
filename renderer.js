@@ -18,6 +18,7 @@ const state = {
   // Voice recognition
   recognition: null,
   recognitionRunning: false,
+  interimWordsProcessed: 0,  // words already matched in the current interim phrase
 
   // Auto-scroll
   autoScrollTimer: null,
@@ -294,18 +295,27 @@ function buildRecognition() {
       setStatus('listening', `Hearing: \u201c${preview}\u201d`);
     }
 
-    // Only advance position on FINAL results.
-    // Interim results are a continuously growing phrase ("hello" → "hello world"
-    // → "hello world how are you"). Using them for matching causes the same words
-    // to be processed multiple times, then re-processed again when the final
-    // arrives — producing large forward jumps.
     if (finalText.trim()) {
-      processTranscript(finalText.trim());
+      // A final result arrived. The interim for this utterance was already
+      // processed word-by-word below, so we just reset the counter so the
+      // NEXT utterance starts fresh from word 0.
+      state.interimWordsProcessed = 0;
+    } else if (interimText.trim()) {
+      // Interim results grow: "hello" → "hello world" → "hello world how are".
+      // Only process the NEW words added since the last event to avoid
+      // re-matching words that already advanced the position.
+      const allWords = interimText.trim().split(/\s+/).filter(Boolean);
+      const newWords = allWords.slice(state.interimWordsProcessed);
+      if (newWords.length > 0) {
+        processTranscript(newWords.join(' '));
+        state.interimWordsProcessed = allWords.length;
+      }
     }
   };
 
   r.onerror = (e) => {
     state.recognitionRunning = false;
+    state.interimWordsProcessed = 0;
     const messages = {
       'not-allowed':         'Microphone access denied — allow mic in browser',
       'network':             'Network error — check your connection',
@@ -320,6 +330,7 @@ function buildRecognition() {
 
   r.onend = () => {
     state.recognitionRunning = false;
+    state.interimWordsProcessed = 0;  // reset so the new session starts clean
     // Chrome times out every ~60 s — restart seamlessly
     if (state.isPlaying && state.mode === 'voice') {
       setTimeout(() => startRecognition(), 300);
