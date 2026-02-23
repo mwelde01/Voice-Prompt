@@ -119,22 +119,25 @@ function processTranscript(transcript) {
   let searchFrom = state.currentWordIndex;
   let lastMatch  = state.currentWordIndex - 1;
 
-  // Hard cap: one transcript event (one spoken phrase) can never advance
-  // more than 15 positions. Without this, a 20-word final transcript with a
-  // per-word window of 8 could theoretically jump 160 positions in one call.
-  const absoluteMax = Math.min(state.currentWordIndex + 15, state.scriptWords.length);
+  // Hard cap per call: with incremental processing each call has 1-3 new
+  // words, so capping at currentWordIndex+6 is plenty and prevents runaway jumps.
+  const absoluteMax = Math.min(state.currentWordIndex + 6, state.scriptWords.length);
 
   for (const rWord of recognized) {
-    // Per-word window of 8: tight enough to prevent skipping over mishears,
-    // wide enough to handle a few unrecognised filler words.
-    const windowEnd = Math.min(searchFrom + 8, absoluteMax);
-    if (windowEnd <= searchFrom) break;   // hit the hard cap
+    // Window of 4: can skip at most 3 words to handle one misrecognised word.
+    const windowEnd = Math.min(searchFrom + 4, absoluteMax);
+    if (windowEnd <= searchFrom) break;
 
     let bestScore = 0.55;
     let bestIdx   = -1;
 
     for (let i = searchFrom; i < windowEnd; i++) {
-      const score = wordSimilarity(rWord, state.scriptWords[i]);
+      let score = wordSimilarity(rWord, state.scriptWords[i]);
+      if (score > 0) {
+        // Prefer the closest match: penalise positions further from searchFrom.
+        // This stops a strong-but-distant match beating a weaker nearby one.
+        score -= 0.04 * (i - searchFrom);
+      }
       if (score > bestScore) {
         bestScore = score;
         bestIdx   = i;
@@ -297,13 +300,16 @@ function buildRecognition() {
 
     if (finalText.trim()) {
       // A final result arrived. The interim for this utterance was already
-      // processed word-by-word below, so we just reset the counter so the
-      // NEXT utterance starts fresh from word 0.
+      // processed word-by-word, so just reset the counter for the next utterance.
       state.interimWordsProcessed = 0;
-    } else if (interimText.trim()) {
+    }
+
+    // Handle interim separately (NOT else-if): Chrome sometimes fires one event
+    // with both a completed final AND the start of the next interim.  If we used
+    // else-if we would skip those new interim words entirely.
+    if (interimText.trim()) {
       // Interim results grow: "hello" → "hello world" → "hello world how are".
-      // Only process the NEW words added since the last event to avoid
-      // re-matching words that already advanced the position.
+      // Only process the NEW words added since the last event.
       const allWords = interimText.trim().split(/\s+/).filter(Boolean);
       const newWords = allWords.slice(state.interimWordsProcessed);
       if (newWords.length > 0) {
